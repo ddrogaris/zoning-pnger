@@ -6,7 +6,10 @@
       "Bash(curl -s \"https://www.zoningatlas.org/snapshots\")",
       "Read(//tmp/**)",
       "WebFetch(domain:edit.zoningatlas.org)",
-      "Bash(curl -s \"https://edit.zoningatlas.org/\" -I)"
+      "Bash(curl -s \"https://edit.zoningatlas.org/\" -I)",
+      "Bash(curl -s \"https://edit.zoningatlas.org/statsrollup/jurisdiction/6497/\" -H \"User-Agent: Mozilla/5.0\")",
+      "Bash(curl -s \"https://edit.zoningatlas.org/statsrollup/jurisdiction/6497/?format=html\" -H \"User-Agent: Mozilla/5.0\")",
+      "Bash(xargs cat)"
     ]
   }
 }

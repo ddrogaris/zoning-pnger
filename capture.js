@@ -11,122 +11,135 @@
   'use strict';
 
   /* ============================================================
-     CHART DETECTION
-     Try selectors in priority order, dedup, filter noise
+     CHART DETECTION — heading-anchored section finder
      ============================================================ */
 
-  const MIN_WIDTH = 120;
-  const MIN_HEIGHT = 100;
-
-  // Selectors that are almost certainly chart wrappers
-  const CHART_SELECTORS = [
-    // Class-name fragments (case-insensitive handled via querySelectorAll patterns)
-    '[class*="chart"]',
-    '[class*="graph"]',
-    '[class*="viz"]',
-    '[class*="visualization"]',
-    '[class*="snapshot"]',
-    '[class*="stat-block"]',
-    '[class*="stat_block"]',
-    '[class*="figure"]',
-    // Data attributes
-    '[data-chart]',
-    '[data-graph]',
-    '[data-highcharts-chart]',
-    // Common framework containers
-    '.recharts-wrapper',
-    '.vega-embed',
-    '.plotly',
-    '.highcharts-container',
-    '.apexcharts-canvas',
-    // Native chart elements
-    'canvas',
-    'svg:not([aria-hidden="true"]):not([width="0"])',
+  // The 7 known report sections, in desired output order.
+  // Matching is case-insensitive substring (.includes).
+  const KNOWN_SECTIONS = [
+    'zoning codes overview',
+    'land categories',
+    'zoning categories',
+    'housing units allowed',
+    'minimum lot sizes',
+    'accessory dwelling units',
+    'parking mandates'
   ];
 
-  // Tags we should never capture (structural/decorative)
-  const EXCLUDED_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'HEAD', 'HTML',
-    'HEADER', 'FOOTER', 'NAV', 'ASIDE', 'META', 'LINK']);
+  /**
+   * Walk UP from a heading to find its enclosing section container.
+   *
+   * "Section container" criteria:
+   *   - ≥ 200px tall and ≥ 300px wide
+   *   - Heading sits in the top 40% of the element's height
+   *   - Parent is at least 1.5× taller (prevents over-walking to a giant wrapper)
+   *
+   * Falls back to the heading's parentElement if nothing better is found.
+   */
+  function findSectionContainer(heading) {
+    const hRect = heading.getBoundingClientRect();
+    let el = heading.parentElement;
 
-  function isVisible(el) {
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width >= MIN_WIDTH && rect.height >= MIN_HEIGHT;
-  }
+    while (el && el !== document.body && el !== document.documentElement) {
+      const rect = el.getBoundingClientRect();
 
-  function isExcluded(el) {
-    if (EXCLUDED_TAGS.has(el.tagName)) return true;
-    // Check if it's inside a header/footer/nav
-    if (el.closest('header, footer, nav, aside')) return true;
-    return false;
+      if (rect.width >= 300 && rect.height >= 200) {
+        const relPos = rect.height > 0
+          ? (hRect.top - rect.top) / rect.height
+          : 1;
+
+        if (relPos >= 0 && relPos < 0.40) {
+          const parentRect = el.parentElement
+            ? el.parentElement.getBoundingClientRect()
+            : null;
+
+          // Stop here if parent is absent, zero-height, or significantly larger
+          if (!parentRect || parentRect.height <= 0 || parentRect.height >= rect.height * 1.5) {
+            return el;
+          }
+        }
+      }
+
+      el = el.parentElement;
+    }
+
+    return heading.parentElement || heading;
   }
 
   /**
-   * Heuristic fallback: find large block-level elements that look like charts.
-   * Avoids generic containers that just happen to be large.
+   * Primary: find the 7 named sections by anchoring on their heading text.
+   * Returns them in KNOWN_SECTIONS order; skips any not present on this page.
    */
-  function heuristicChartContainers() {
-    const candidates = [];
-    const allBlocks = document.querySelectorAll(
-      'div, section, article, figure, table'
+  function findSectionsByHeading() {
+    const allHeadings = Array.from(
+      document.querySelectorAll('h1, h2, h3, h4, h5, h6')
     );
-    for (const el of allBlocks) {
-      if (isExcluded(el)) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 250 || rect.height < 150) continue;
+    const seen = new Set();
+    const results = [];
 
-      // Skip elements that contain other large block children
-      // (we want the leaf-level chart container, not its wrapper)
-      const largeChildren = Array.from(el.children).filter(child => {
-        const cr = child.getBoundingClientRect();
-        return cr.width >= 200 && cr.height >= 120;
-      });
-      if (largeChildren.length > 0) continue;
+    for (const name of KNOWN_SECTIONS) {
+      const heading = allHeadings.find(h =>
+        h.textContent.trim().toLowerCase().includes(name)
+      );
+      if (!heading) continue;
 
-      // A chart is likely to contain at least one of: canvas, svg, or many
-      // similarly-classed child divs (bar chart segments, etc.)
-      const hasCanvas = el.querySelector('canvas');
-      const hasSvg = el.querySelector('svg');
-      const hasManyDivChildren = el.querySelectorAll(':scope > div').length >= 3;
-
-      if (hasCanvas || hasSvg || hasManyDivChildren) {
-        candidates.push(el);
+      const container = findSectionContainer(heading);
+      if (container && !seen.has(container)) {
+        seen.add(container);
+        results.push(container);
       }
     }
-    return candidates;
+
+    return results;
   }
 
-  function detectCharts() {
+  /**
+   * Fallback: generic selector sweep used only when heading-based detection
+   * finds nothing (e.g. site markup changed).
+   *
+   * Key fix vs the original: dedup keeps OUTERMOST elements (not innermost),
+   * so a section container is kept rather than its child canvas/svg.
+   */
+  const FALLBACK_SELECTORS = [
+    '[class*="chart-container"]',
+    '[class*="chart-wrapper"]',
+    '[class*="chart-section"]',
+    '[class*="report-section"]',
+    '[class*="stat-block"]',
+    '[class*="stat_block"]',
+    'canvas[width][height]',
+    'svg[width][height]:not([aria-hidden="true"])',
+  ];
+
+  function findSectionsGeneric() {
     const seen = new Set();
-    const charts = [];
+    const candidates = [];
 
-    function addIfNew(el) {
-      if (!el || seen.has(el)) return;
-      if (isExcluded(el)) return;
-      if (!isVisible(el)) return;
-      seen.add(el);
-      charts.push(el);
-    }
-
-    // Priority 1: explicit selectors
-    for (const sel of CHART_SELECTORS) {
+    for (const sel of FALLBACK_SELECTORS) {
       try {
-        document.querySelectorAll(sel).forEach(addIfNew);
+        document.querySelectorAll(sel).forEach(el => {
+          if (seen.has(el)) return;
+          if (el.closest('header, footer, nav, aside')) return;
+          const { width, height } = el.getBoundingClientRect();
+          if (width < 200 || height < 150) return;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return;
+          seen.add(el);
+          candidates.push(el);
+        });
       } catch (_) {}
     }
 
-    // Priority 2: heuristic large blocks (only if we found nothing)
-    if (charts.length === 0) {
-      heuristicChartContainers().forEach(addIfNew);
-    }
-
-    // Deduplicate: if an element is an ancestor of another, keep only the inner one
-    const finalCharts = charts.filter(el =>
-      !charts.some(other => other !== el && el.contains(other))
+    // Keep outermost: drop any element that is a descendant of another candidate
+    return candidates.filter(el =>
+      !candidates.some(other => other !== el && other.contains(el))
     );
+  }
 
-    return finalCharts;
+  function detectCharts() {
+    const primary = findSectionsByHeading();
+    if (primary.length > 0) return primary;
+    return findSectionsGeneric();
   }
 
   /* ============================================================
@@ -239,8 +252,68 @@
     walk(node);
   }
 
+  /* ============================================================
+     CROSS-ORIGIN IMAGE INLINING
+     Any <img src> or CSS background-image that points to a
+     cross-origin URL will taint the canvas and block toDataURL().
+     We fetch each one and replace it with a base64 data: URL before
+     the clone is serialised into the SVG blob.
+     ============================================================ */
+
+  /** Fetch a URL and return it as a base64 data: URL. */
+  async function fetchAsDataUrl(url) {
+    const resp = await fetch(url, { mode: 'cors' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(/** @type {string} */ (reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
   /**
-   * Capture a div/SVG element via SVG foreignObject → canvas → PNG dataURL
+   * Walk a cloned element and replace every external image reference
+   * (<img src>, CSS background-image) with an inlined data: URL.
+   * Silently clears any src/background that can't be fetched so the
+   * resource is simply absent rather than tainting the canvas.
+   */
+  async function inlineImages(root) {
+    const tasks = [];
+
+    // 1. <img src="…">
+    root.querySelectorAll('img[src]').forEach(img => {
+      const src = img.getAttribute('src');
+      if (!src || src.startsWith('data:')) return;
+      tasks.push(
+        fetchAsDataUrl(src)
+          .then(d => img.setAttribute('src', d))
+          .catch(() => { img.setAttribute('src', ''); img.style.display = 'none'; })
+      );
+    });
+
+    // 2. Inline style background-image on every element
+    root.querySelectorAll('*').forEach(el => {
+      const bg = el.style.backgroundImage;
+      if (!bg) return;
+      const match = bg.match(/url\(['"]?([^'")\s]+)['"]?\)/);
+      if (!match || !match[1] || match[1].startsWith('data:')) return;
+      const url = match[1];
+      tasks.push(
+        fetchAsDataUrl(url)
+          .then(d => { el.style.backgroundImage = `url('${d}')`; })
+          .catch(() => { el.style.backgroundImage = 'none'; })
+      );
+    });
+
+    await Promise.allSettled(tasks);
+  }
+
+  /**
+   * Capture a div/SVG element via SVG foreignObject → canvas → PNG dataURL.
+   * Images are inlined as data: URLs before serialisation so the canvas
+   * never becomes tainted.
    */
   async function captureViaForeignObject(el) {
     const rect = el.getBoundingClientRect();
@@ -254,6 +327,9 @@
     inlineComputedStyles(el, clone);
     resolveUrls(clone);
 
+    // Inline all images as data: URLs — prevents canvas taint
+    await inlineImages(clone);
+
     // Force explicit dimensions on the clone root
     clone.style.width = width + 'px';
     clone.style.height = height + 'px';
@@ -261,7 +337,6 @@
     clone.style.position = 'relative';
 
     // Serialize to XHTML inside foreignObject
-    // Use XMLSerializer for proper namespace handling
     const serializer = new XMLSerializer();
     let cloneHtml;
     try {
@@ -296,10 +371,16 @@
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
         URL.revokeObjectURL(svgUrl);
-        resolve(canvas.toDataURL('image/png'));
+        // Wrap toDataURL in try/catch: if a resource we couldn't inline
+        // still taints the canvas, reject cleanly instead of hanging.
+        try {
+          resolve(canvas.toDataURL('image/png'));
+        } catch (secErr) {
+          reject(secErr);
+        }
       };
 
-      img.onerror = (e) => {
+      img.onerror = () => {
         URL.revokeObjectURL(svgUrl);
         reject(new Error('SVG image load failed'));
       };
