@@ -1,108 +1,153 @@
-/* popup.js — popup controller */
+/* popup.js — popup controller
+ *
+ * Message flow:
+ *  PING  → chrome.tabs.sendMessage → content.js → {ready, jurisdictionId}
+ *  START_EXPORT → chrome.runtime.sendMessage → background.js (with tabId)
+ *  CHART_CAPTURED / CHART_ERROR → broadcast from capture.js via runtime → popup
+ *  EXPORT_COMPLETE / EXPORT_FAILED → broadcast from background.js → popup
+ */
 
-const exportBtn = document.getElementById('export-btn');
+const exportBtn  = document.getElementById('export-btn');
 const statusText = document.getElementById('status-text');
-const statusBox = document.getElementById('status-box');
-const spinner = document.getElementById('spinner');
-const chartList = document.getElementById('chart-list');
+const statusBox  = document.getElementById('status-box');
+const spinner    = document.getElementById('spinner');
+const chartList  = document.getElementById('chart-list');
 
-function setStatus(msg, type = 'info', spinning = false) {
+let activeTabId = null;
+let jurisdictionId = null;
+
+/* ------------------------------------------------------------------ */
+/* UI helpers                                                           */
+/* ------------------------------------------------------------------ */
+
+function setStatus(msg, type = '', spinning = false) {
   statusText.textContent = msg;
-  statusBox.className = type === 'error' ? 'error' :
-                        type === 'success' ? 'success' :
-                        type === 'working' ? 'working' : '';
+  statusBox.className = ['error', 'success', 'working'].includes(type) ? type : '';
   spinner.classList.toggle('visible', spinning);
 }
 
-function addChartItem(name, state = 'pending') {
-  const item = document.createElement('div');
-  item.className = 'chart-list-item';
-  item.id = `chart-item-${name}`;
+function addChartRow(name) {
+  if (document.getElementById(`ci-${CSS.escape(name)}`)) return;
+  const row = document.createElement('div');
+  row.className = 'chart-list-item';
+  row.id = `ci-${name}`;
+
   const dot = document.createElement('div');
-  dot.className = `dot ${state === 'done' ? 'done' : state === 'error' ? 'error' : ''}`;
-  item.appendChild(dot);
-  const label = document.createElement('span');
-  label.textContent = name;
-  item.appendChild(label);
-  chartList.appendChild(item);
-  return { dot };
+  dot.className = 'dot';
+  dot.id = `dot-${name}`;
+
+  const lbl = document.createElement('span');
+  lbl.textContent = name;
+
+  row.appendChild(dot);
+  row.appendChild(lbl);
+  chartList.appendChild(row);
 }
 
-// Check if we're on the right page
-chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-  if (!tab) return;
+function markDot(name, state) {
+  const dot = document.getElementById(`dot-${name}`);
+  if (dot) dot.className = `dot ${state}`;
+}
 
+/* ------------------------------------------------------------------ */
+/* On open: check current tab                                          */
+/* ------------------------------------------------------------------ */
+
+chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+  if (!tab) { setStatus('No active tab found.', 'error'); return; }
+
+  activeTabId = tab.id;
   const url = tab.url || '';
+
   if (!url.includes('zoningatlas.org/snapshots')) {
-    setStatus('Navigate to zoningatlas.org/snapshots?jurisdiction=… first.', 'error');
+    setStatus('Navigate to zoningatlas.org/snapshots?jurisdiction=… to begin.', 'error');
     return;
   }
 
-  // Check if the report iframe has loaded
+  // Extract jurisdiction ID from URL
+  try {
+    const params = new URLSearchParams(new URL(url).search);
+    jurisdictionId = params.get('jurisdiction') || null;
+  } catch (_) {}
+
+  // PING the content script to check if the report iframe is loaded
   chrome.tabs.sendMessage(tab.id, { type: 'PING' }, (resp) => {
     if (chrome.runtime.lastError || !resp) {
-      setStatus('Page loading… refresh and try again.', 'error');
+      // Content script may not be injected yet (page still loading)
+      setStatus('Page still loading — wait a moment and re-open this popup.', 'working');
       return;
     }
     if (resp.ready) {
-      setStatus(`Report loaded for jurisdiction ${resp.jurisdictionId || '?'}. Ready to export.`);
+      jurisdictionId = resp.jurisdictionId || jurisdictionId;
+      setStatus(`Jurisdiction ${jurisdictionId || '?'} snapshot loaded. Ready to export.`);
       exportBtn.disabled = false;
     } else {
-      setStatus('Waiting for snapshot report to load. Select a jurisdiction first.', 'working');
+      setStatus('Snapshot not loaded yet. Select a jurisdiction on the page first.', 'working');
     }
   });
 });
 
-// Export button click
+/* ------------------------------------------------------------------ */
+/* Export button                                                        */
+/* ------------------------------------------------------------------ */
+
 exportBtn.addEventListener('click', () => {
+  if (!activeTabId) return;
   exportBtn.disabled = true;
   chartList.innerHTML = '';
-  setStatus('Capturing charts…', 'working', true);
+  setStatus('Starting export…', 'working', true);
 
-  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-    chrome.tabs.sendMessage(tab.id, { type: 'EXPORT_CHARTS' }, (resp) => {
-      if (chrome.runtime.lastError || !resp) {
-        setStatus('Could not reach the page. Try refreshing.', 'error');
+  chrome.runtime.sendMessage(
+    { type: 'START_EXPORT', tabId: activeTabId, jurisdictionId },
+    (ack) => {
+      if (chrome.runtime.lastError) {
+        setStatus('Background error: ' + chrome.runtime.lastError.message, 'error');
         exportBtn.disabled = false;
         return;
       }
-
-      if (resp.error) {
-        setStatus(`Error: ${resp.error}`, 'error');
+      if (ack?.error) {
+        setStatus('Error: ' + ack.error, 'error');
         exportBtn.disabled = false;
-        return;
       }
-
-      // Show chart list
-      if (resp.charts) {
-        resp.charts.forEach(name => addChartItem(name));
-      }
-    });
-  });
+      // Otherwise we wait for broadcast messages (CHART_CAPTURED, EXPORT_COMPLETE, etc.)
+    }
+  );
 });
 
-// Listen for progress messages from background/content
+/* ------------------------------------------------------------------ */
+/* Incoming broadcast messages from capture.js / background.js         */
+/* ------------------------------------------------------------------ */
+
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'CHART_CAPTURED') {
-    const item = document.getElementById(`chart-item-${msg.name}`);
-    if (item) item.querySelector('.dot').className = 'dot done';
-    setStatus(`Captured ${msg.index + 1} / ${msg.total} charts…`, 'working', true);
-  }
+  switch (msg.type) {
+    case 'CHARTS_FOUND':
+      // Background found and named all charts — populate the list
+      if (Array.isArray(msg.names)) {
+        chartList.innerHTML = '';
+        msg.names.forEach(name => addChartRow(name));
+        setStatus(`Capturing ${msg.names.length} chart(s)…`, 'working', true);
+      }
+      break;
 
-  if (msg.type === 'CHART_ERROR') {
-    const item = document.getElementById(`chart-item-${msg.name}`);
-    if (item) item.querySelector('.dot').className = 'dot error';
-  }
+    case 'CHART_CAPTURED':
+      markDot(msg.name, 'done');
+      setStatus(`Captured ${msg.index + 1} / ${msg.total}…`, 'working', true);
+      break;
 
-  if (msg.type === 'EXPORT_COMPLETE') {
-    spinner.classList.remove('visible');
-    setStatus(`Downloaded ${msg.count} charts as ZIP ✓`, 'success');
-    exportBtn.disabled = false;
-  }
+    case 'CHART_ERROR':
+      markDot(msg.name, 'error');
+      break;
 
-  if (msg.type === 'EXPORT_FAILED') {
-    spinner.classList.remove('visible');
-    setStatus(`Export failed: ${msg.error}`, 'error');
-    exportBtn.disabled = false;
+    case 'EXPORT_COMPLETE':
+      spinner.classList.remove('visible');
+      setStatus(`✓ Downloaded ${msg.count} chart(s) as ZIP`, 'success');
+      exportBtn.disabled = false;
+      break;
+
+    case 'EXPORT_FAILED':
+      spinner.classList.remove('visible');
+      setStatus('Export failed: ' + (msg.error || 'unknown error'), 'error');
+      exportBtn.disabled = false;
+      break;
   }
 });
