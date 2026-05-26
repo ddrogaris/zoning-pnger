@@ -144,7 +144,15 @@ async function runExport(tabId, jurisdictionId) {
   }
 
   if (successCount === 0) {
-    broadcast({ type: 'EXPORT_FAILED', error: 'All chart captures failed (check console for details).' });
+    // Surface the first few individual error messages so the user doesn't need DevTools.
+    const errLines = results
+      .filter(r => r.error)
+      .slice(0, 3)
+      .map(r => `• ${r.name}: ${r.error}`);
+    const detail = errLines.length
+      ? '\n' + errLines.join('\n')
+      : ' (no error details available)';
+    broadcast({ type: 'EXPORT_FAILED', error: 'All chart captures failed.' + detail });
     return;
   }
 

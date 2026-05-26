@@ -192,32 +192,77 @@
      ============================================================ */
 
   /**
-   * Recursively inline all computed styles onto cloned nodes.
-   * This ensures the element renders correctly inside an isolated SVG blob.
+   * Only inline the CSS properties that affect visual appearance.
+   *
+   * WHY: getComputedStyle() returns ~300 properties per element. Inlining
+   * all of them on every node in a large section produces an SVG blob of
+   * several MB — Chrome refuses to render SVG images above a few MB, causing
+   * img.onerror to fire silently. This curated list covers 100 % of chart
+   * rendering (colours, sizing, layout, borders, text) while keeping the
+   * serialised blob small enough to load reliably.
    */
+  const VISUAL_PROPERTIES = [
+    // Box model / sizing
+    'display', 'box-sizing',
+    'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height',
+    // Positioning
+    'position', 'top', 'right', 'bottom', 'left', 'z-index', 'float', 'clear',
+    // Spacing
+    'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    // Borders
+    'border', 'border-top', 'border-right', 'border-bottom', 'border-left',
+    'border-width', 'border-style', 'border-color',
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+    'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+    'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+    'border-radius',
+    'border-top-left-radius', 'border-top-right-radius',
+    'border-bottom-left-radius', 'border-bottom-right-radius',
+    // Background
+    'background-color', 'background-image', 'background-size',
+    'background-position', 'background-repeat', 'background-clip',
+    // Text & font
+    'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+    'font-variant', 'line-height', 'letter-spacing', 'word-spacing',
+    'text-align', 'text-decoration', 'text-transform', 'text-indent',
+    'white-space', 'word-break', 'overflow-wrap', 'vertical-align',
+    // Flexbox
+    'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
+    'justify-content', 'align-items', 'align-self', 'align-content', 'order',
+    // Grid
+    'grid-template-columns', 'grid-template-rows', 'grid-template-areas',
+    'grid-column', 'grid-row', 'gap', 'row-gap', 'column-gap',
+    // Overflow / visibility
+    'overflow', 'overflow-x', 'overflow-y', 'opacity', 'visibility',
+    // Effects
+    'transform', 'transform-origin', 'box-shadow', 'text-shadow',
+    'filter',
+    // Tables
+    'table-layout', 'border-collapse', 'border-spacing',
+    // Lists
+    'list-style-type', 'list-style-position',
+    // SVG-specific
+    'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity',
+    'stroke-dasharray', 'stroke-linecap', 'stroke-linejoin',
+  ];
+
   function inlineComputedStyles(source, target) {
     if (source.nodeType !== Node.ELEMENT_NODE) return;
 
     const computed = window.getComputedStyle(source);
-    const style = [];
-    for (let i = 0; i < computed.length; i++) {
-      const prop = computed[i];
+    const parts = [];
+    for (const prop of VISUAL_PROPERTIES) {
       const val = computed.getPropertyValue(prop);
-      if (val) {
-        style.push(`${prop}:${val}`);
-      }
+      if (val) parts.push(`${prop}:${val}`);
     }
-    target.setAttribute('style', style.join(';'));
-
-    // Remove class/id to avoid collisions
+    target.setAttribute('style', parts.join(';'));
     target.removeAttribute('class');
 
     const srcChildren = source.children;
     const tgtChildren = target.children;
     for (let i = 0; i < srcChildren.length; i++) {
-      if (tgtChildren[i]) {
-        inlineComputedStyles(srcChildren[i], tgtChildren[i]);
-      }
+      if (tgtChildren[i]) inlineComputedStyles(srcChildren[i], tgtChildren[i]);
     }
   }
 
@@ -502,6 +547,9 @@
               total: chartEls.length
             }).catch(() => {});
           } catch (err) {
+            // Log to the iframe's DevTools console for easier debugging.
+            // (Select the iframe context in the DevTools console dropdown to see this.)
+            console.error(`[pnger] capture failed for "${name}":`, err);
             results.push({ name, dataUrl: null, success: false, error: err.message });
             chrome.runtime.sendMessage({
               type: 'CHART_ERROR',
