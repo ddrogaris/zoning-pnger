@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Zoning Atlas Chart Exporter",
+  "version": "1.0.0",
+  "description": "Export all zoning snapshot charts as PNG images from the National Zoning Atlas.",
+  "permissions": [
+    "downloads",
+    "scripting",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.zoningatlas.org/*",
+    "https://edit.zoningatlas.org/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Export Zoning Charts"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.zoningatlas.org/snapshots*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://edit.zoningatlas.org/statsrollup/*"
+      ],
+      "js": [
+        "lib/jszip.min.js",
+        "capture.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

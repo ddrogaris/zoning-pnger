@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.zoningatlas.org)",
+      "Bash(curl -s \"https://www.zoningatlas.org/snapshots?jurisdiction=8998\")",
+      "Bash(curl -s \"https://www.zoningatlas.org/snapshots\")",
+      "Read(//tmp/**)",
+      "WebFetch(domain:edit.zoningatlas.org)",
+      "Bash(curl -s \"https://edit.zoningatlas.org/\" -I)"
+    ]
+  }
+}
