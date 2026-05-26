@@ -36,6 +36,7 @@
       ],
       "js": [
         "lib/jszip.min.js",
+        "lib/html2canvas.min.js",
         "capture.js"
       ],
       "run_at": "document_idle",
