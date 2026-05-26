@@ -223,7 +223,11 @@
     'background-color', 'background-image', 'background-size',
     'background-position', 'background-repeat', 'background-clip',
     // Text & font
-    'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+    // NOTE: font-family is intentionally excluded. Web fonts (Google Fonts, etc.)
+    // are loaded cross-origin when referenced from an isolated SVG blob, which
+    // taints the canvas and blocks toDataURL(). Omitting font-family makes text
+    // render in the browser default font; all other typographic properties are kept.
+    'color', 'font-size', 'font-weight', 'font-style',
     'font-variant', 'line-height', 'letter-spacing', 'word-spacing',
     'text-align', 'text-decoration', 'text-transform', 'text-indent',
     'white-space', 'word-break', 'overflow-wrap', 'vertical-align',
@@ -334,7 +338,9 @@
       tasks.push(
         fetchAsDataUrl(src)
           .then(d => img.setAttribute('src', d))
-          .catch(() => { img.setAttribute('src', ''); img.style.display = 'none'; })
+          // Remove entirely rather than setting src="" — an empty src can still
+          // trigger a request (to the document URL) and taint the canvas.
+          .catch(() => img.parentNode && img.parentNode.removeChild(img))
       );
     });
 
